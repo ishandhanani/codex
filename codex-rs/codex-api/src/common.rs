@@ -1,4 +1,5 @@
 use crate::error::ApiError;
+use crate::nvext::NvExt;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ResponseItem;
@@ -168,6 +169,9 @@ pub struct ResponsesApiRequest {
     pub prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<TextControls>,
+    /// NVIDIA Dynamo extensions. Only serialized when targeting a Dynamo provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nvext: Option<NvExt>,
 }
 
 impl From<&ResponsesApiRequest> for ResponseCreateWsRequest {

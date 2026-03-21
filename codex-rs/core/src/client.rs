@@ -142,6 +142,43 @@ struct ModelClientState {
     beta_features_header: Option<String>,
     disable_websockets: AtomicBool,
     cached_websocket_session: StdMutex<WebsocketSession>,
+    /// Dynamo session state for nvext injection (only populated for subagent sessions
+    /// when `provider.enable_nvext` is true).
+    dynamo: Option<DynamoSessionState>,
+}
+
+/// Per-session Dynamo state for nvext injection.
+#[derive(Debug)]
+pub(crate) struct DynamoSessionState {
+    session_id: String,
+    is_first_turn: AtomicBool,
+    pending_close: AtomicBool,
+    config: codex_api::nvext::DynamoConfig,
+}
+
+impl DynamoSessionState {
+    /// Create dynamo session state for subagent sessions.
+    ///
+    /// Returns `Some` only for `SubAgent(ThreadSpawn { .. })` sessions, since only
+    /// subagents benefit from sticky routing and KV isolation. Parent sessions
+    /// return `None`.
+    pub(crate) fn from_session_source(
+        source: &SessionSource,
+        conversation_id: ThreadId,
+        config: codex_api::nvext::DynamoConfig,
+    ) -> Option<Self> {
+        match source {
+            SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                ..
+            }) => Some(Self {
+                session_id: format!("codex-{conversation_id}"),
+                is_first_turn: AtomicBool::new(true),
+                pending_close: AtomicBool::new(false),
+                config,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// Resolved API client setup for a single request attempt.
@@ -261,6 +298,31 @@ impl ModelClient {
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
     ) -> Self {
+        Self::new_with_dynamo(
+            auth_manager,
+            conversation_id,
+            provider,
+            session_source,
+            model_verbosity,
+            enable_request_compression,
+            include_timing_metrics,
+            beta_features_header,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_dynamo(
+        auth_manager: Option<Arc<AuthManager>>,
+        conversation_id: ThreadId,
+        provider: ModelProviderInfo,
+        session_source: SessionSource,
+        model_verbosity: Option<VerbosityConfig>,
+        enable_request_compression: bool,
+        include_timing_metrics: bool,
+        beta_features_header: Option<String>,
+        dynamo: Option<DynamoSessionState>,
+    ) -> Self {
         let codex_api_key_env_enabled = auth_manager
             .as_ref()
             .is_some_and(|manager| manager.codex_api_key_env_enabled());
@@ -278,6 +340,7 @@ impl ModelClient {
                 beta_features_header,
                 disable_websockets: AtomicBool::new(false),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+                dynamo,
             }),
         }
     }
@@ -743,8 +806,58 @@ impl ModelClientSession {
             },
             prompt_cache_key,
             text,
+            nvext: self.build_dynamo_nvext(),
         };
         Ok(request)
+    }
+
+    /// Build the `nvext` field for a Dynamo provider request.
+    ///
+    /// Returns `None` for non-Dynamo providers or when no dynamo session state exists.
+    /// For Dynamo subagent sessions, injects session_control (with lifecycle actions on
+    /// first/last turn) and optionally cache_control and agent_hints.
+    fn build_dynamo_nvext(&self) -> Option<codex_api::nvext::NvExt> {
+        let dynamo = self.client.state.dynamo.as_ref()?;
+
+        let action = if dynamo.pending_close.swap(false, Ordering::SeqCst) {
+            Some(codex_api::nvext::SessionAction::Close)
+        } else if dynamo.is_first_turn.swap(false, Ordering::SeqCst) {
+            Some(codex_api::nvext::SessionAction::Open)
+        } else {
+            None
+        };
+
+        let session_control = if dynamo.config.enable_session_control {
+            Some(codex_api::nvext::SessionControl {
+                session_id: dynamo.session_id.clone(),
+                action,
+                timeout: dynamo.config.session_timeout,
+            })
+        } else {
+            None
+        };
+
+        let cache_control = if dynamo.config.enable_cache_control {
+            Some(codex_api::nvext::CacheControl {
+                control_type: "ephemeral".to_string(),
+                ttl: Some(dynamo.config.cache_ttl.clone()),
+            })
+        } else {
+            None
+        };
+
+        let extra_fields = if dynamo.config.extra_fields.is_empty() {
+            None
+        } else {
+            Some(dynamo.config.extra_fields.clone())
+        };
+
+        Some(codex_api::nvext::NvExt {
+            session_control,
+            cache_control,
+            agent_hints: None, // priority is gated off by default
+            extra_fields,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

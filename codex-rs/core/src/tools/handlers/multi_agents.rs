@@ -289,6 +289,31 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     Ok(config)
 }
 
+pub(crate) fn normalize_requested_spawn_agent_model(
+    turn: &TurnContext,
+    requested_model: Option<&str>,
+) -> Result<Option<String>, FunctionCallError> {
+    let requested_model = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    let Some(requested_model) = requested_model else {
+        return Ok(None);
+    };
+
+    if requested_model == turn.model_info.slug {
+        return Ok(None);
+    }
+
+    if !turn.provider.is_openai() {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "spawn_agent model override is unavailable for provider `{}`. Omit `model` to inherit the current model `{}`.",
+            turn.config.model_provider_id, turn.model_info.slug
+        )));
+    }
+
+    Ok(Some(requested_model.to_string()))
+}
+
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
 ///
 /// These values are chosen by the live turn rather than persisted config, so leaving them stale

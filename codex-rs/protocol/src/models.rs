@@ -293,6 +293,9 @@ pub enum MessagePhase {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
+    /// Standard Responses API output message.
+    /// Accepts both `"message"` (legacy/codex) and `"output_message"` (Responses API spec).
+    #[serde(alias = "output_message")]
     Message {
         #[serde(default, skip_serializing)]
         #[ts(skip)]

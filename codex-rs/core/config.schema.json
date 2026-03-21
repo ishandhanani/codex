@@ -815,6 +815,11 @@
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"
         },
+        "enable_nvext": {
+          "default": false,
+          "description": "Whether to inject NVIDIA Dynamo `nvext` extensions into request bodies. Enables session control, cache control, and agent priority hints.",
+          "type": "boolean"
+        },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"

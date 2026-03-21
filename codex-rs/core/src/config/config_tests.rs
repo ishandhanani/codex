@@ -4200,6 +4200,7 @@ model_verbosity = "high"
         websocket_connect_timeout_ms: Some(15_000),
         requires_openai_auth: false,
         supports_websockets: false,
+        enable_nvext: false,
     };
     let model_provider_map = {
         let mut model_provider_map = built_in_model_providers(/* openai_base_url */ None);
@@ -4282,6 +4283,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             mcp_oauth_callback_port: None,
             mcp_oauth_callback_url: None,
             model_providers: fixture.model_provider_map.clone(),
+            dynamo: codex_api::nvext::DynamoConfig::default(),
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
@@ -4425,6 +4427,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         model_providers: fixture.model_provider_map.clone(),
+        dynamo: codex_api::nvext::DynamoConfig::default(),
         project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
         project_doc_fallback_filenames: Vec::new(),
         tool_output_token_limit: None,
@@ -4566,6 +4569,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         model_providers: fixture.model_provider_map.clone(),
+        dynamo: codex_api::nvext::DynamoConfig::default(),
         project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
         project_doc_fallback_filenames: Vec::new(),
         tool_output_token_limit: None,
@@ -4693,6 +4697,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         model_providers: fixture.model_provider_map.clone(),
+        dynamo: codex_api::nvext::DynamoConfig::default(),
         project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
         project_doc_fallback_filenames: Vec::new(),
         tool_output_token_limit: None,

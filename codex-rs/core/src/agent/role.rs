@@ -63,14 +63,20 @@ async fn apply_role_to_config_inner(
         return Ok(());
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
-    let (preserve_current_profile, preserve_current_provider) =
-        preservation_policy(config, &role_layer_toml);
+    let (
+        preserve_current_profile,
+        preserve_current_provider,
+        preserve_current_model,
+        preserve_current_reasoning_effort,
+    ) = preservation_policy(config, &role_layer_toml);
 
     *config = reload::build_next_config(
         config,
         role_layer_toml,
         preserve_current_profile,
         preserve_current_provider,
+        preserve_current_model,
+        preserve_current_reasoning_effort,
     )?;
     Ok(())
 }
@@ -119,9 +125,11 @@ pub(crate) fn resolve_role_config<'a>(
         .or_else(|| built_in::configs().get(role_name))
 }
 
-fn preservation_policy(config: &Config, role_layer_toml: &TomlValue) -> (bool, bool) {
+fn preservation_policy(config: &Config, role_layer_toml: &TomlValue) -> (bool, bool, bool, bool) {
     let role_selects_provider = role_layer_toml.get("model_provider").is_some();
     let role_selects_profile = role_layer_toml.get("profile").is_some();
+    let role_selects_model = role_layer_toml.get("model").is_some();
+    let role_selects_reasoning_effort = role_layer_toml.get("model_reasoning_effort").is_some();
     let role_updates_active_profile_provider = config
         .active_profile
         .as_ref()
@@ -134,10 +142,44 @@ fn preservation_policy(config: &Config, role_layer_toml: &TomlValue) -> (bool, b
                 .map(|profile| profile.contains_key("model_provider"))
         })
         .unwrap_or(false);
+    let role_updates_active_profile_model = config
+        .active_profile
+        .as_ref()
+        .and_then(|active_profile| {
+            role_layer_toml
+                .get("profiles")
+                .and_then(TomlValue::as_table)
+                .and_then(|profiles| profiles.get(active_profile))
+                .and_then(TomlValue::as_table)
+                .map(|profile| profile.contains_key("model"))
+        })
+        .unwrap_or(false);
+    let role_updates_active_profile_reasoning_effort = config
+        .active_profile
+        .as_ref()
+        .and_then(|active_profile| {
+            role_layer_toml
+                .get("profiles")
+                .and_then(TomlValue::as_table)
+                .and_then(|profiles| profiles.get(active_profile))
+                .and_then(TomlValue::as_table)
+                .map(|profile| profile.contains_key("model_reasoning_effort"))
+        })
+        .unwrap_or(false);
     let preserve_current_profile = !role_selects_provider && !role_selects_profile;
     let preserve_current_provider =
         preserve_current_profile && !role_updates_active_profile_provider;
-    (preserve_current_profile, preserve_current_provider)
+    let preserve_current_model =
+        preserve_current_provider && !role_selects_model && !role_updates_active_profile_model;
+    let preserve_current_reasoning_effort = preserve_current_model
+        && !role_selects_reasoning_effort
+        && !role_updates_active_profile_reasoning_effort;
+    (
+        preserve_current_profile,
+        preserve_current_provider,
+        preserve_current_model,
+        preserve_current_reasoning_effort,
+    )
 }
 
 mod reload {
@@ -148,6 +190,8 @@ mod reload {
         role_layer_toml: TomlValue,
         preserve_current_profile: bool,
         preserve_current_provider: bool,
+        preserve_current_model: bool,
+        preserve_current_reasoning_effort: bool,
     ) -> anyhow::Result<Config> {
         let active_profile_name = preserve_current_profile
             .then_some(config.active_profile.as_deref())
@@ -161,12 +205,15 @@ mod reload {
 
         let mut next_config = Config::load_config_with_layer_stack(
             merged_config,
-            reload_overrides(config, preserve_current_provider),
+            reload_overrides(config, preserve_current_provider, preserve_current_model),
             config.codex_home.clone(),
             config_layer_stack,
         )?;
         if preserve_current_profile {
             next_config.active_profile = config.active_profile.clone();
+        }
+        if preserve_current_reasoning_effort {
+            next_config.model_reasoning_effort = config.model_reasoning_effort;
         }
         Ok(next_config)
     }
@@ -250,8 +297,15 @@ mod reload {
         ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml)
     }
 
-    fn reload_overrides(config: &Config, preserve_current_provider: bool) -> ConfigOverrides {
+    fn reload_overrides(
+        config: &Config,
+        preserve_current_provider: bool,
+        preserve_current_model: bool,
+    ) -> ConfigOverrides {
         ConfigOverrides {
+            model: preserve_current_model
+                .then(|| config.model.clone())
+                .flatten(),
             cwd: Some(config.cwd.clone()),
             model_provider: preserve_current_provider.then(|| config.model_provider_id.clone()),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),

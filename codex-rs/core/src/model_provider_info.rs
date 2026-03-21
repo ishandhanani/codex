@@ -127,6 +127,11 @@ pub struct ModelProviderInfo {
     /// Whether this provider supports the Responses API WebSocket transport.
     #[serde(default)]
     pub supports_websockets: bool,
+
+    /// Whether to inject NVIDIA Dynamo `nvext` extensions into request bodies.
+    /// Enables session control, cache control, and agent priority hints.
+    #[serde(default)]
+    pub enable_nvext: bool,
 }
 
 impl ModelProviderInfo {
@@ -271,6 +276,7 @@ impl ModelProviderInfo {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
+            enable_nvext: false,
         }
     }
 
@@ -281,9 +287,11 @@ impl ModelProviderInfo {
 
 pub const DEFAULT_LMSTUDIO_PORT: u16 = 1234;
 pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
+pub const DEFAULT_DYNAMO_PORT: u16 = 8000;
 
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
+pub const DYNAMO_PROVIDER_ID: &str = "dynamo";
 
 /// Built-in default provider list.
 pub fn built_in_model_providers(
@@ -306,6 +314,7 @@ pub fn built_in_model_providers(
             LMSTUDIO_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
         ),
+        (DYNAMO_PROVIDER_ID, create_dynamo_provider()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -348,6 +357,45 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        enable_nvext: false,
+    }
+}
+
+/// Create the built-in NVIDIA Dynamo provider.
+///
+/// Reads `DYNAMO_BASE_URL` from the environment (defaults to `http://localhost:8000/v1`).
+/// API key is optional via `DYNAMO_API_KEY` for authenticated deployments.
+pub fn create_dynamo_provider() -> ModelProviderInfo {
+    let default_base_url = format!(
+        "http://localhost:{port}/v1",
+        port = std::env::var("DYNAMO_PORT")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_DYNAMO_PORT)
+    );
+    let base_url = std::env::var("DYNAMO_BASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(default_base_url);
+
+    ModelProviderInfo {
+        name: "Dynamo".into(),
+        base_url: Some(base_url),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        enable_nvext: true,
     }
 }
 

@@ -264,7 +264,6 @@ impl UnifiedExecShellMode {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolsConfig {
-    pub available_models: Vec<ModelPreset>,
     pub shell_type: ConfigShellToolType,
     shell_command_backend: ShellCommandBackendConfig,
     pub unified_exec_shell_mode: UnifiedExecShellMode,
@@ -321,7 +320,7 @@ impl ToolsConfig {
     pub fn new(params: &ToolsConfigParams) -> Self {
         let ToolsConfigParams {
             model_info,
-            available_models: available_models_ref,
+            available_models: _available_models_ref,
             features,
             web_search_mode,
             session_source,
@@ -398,7 +397,6 @@ impl ToolsConfig {
             );
 
         Self {
-            available_models: available_models_ref.to_vec(),
             shell_type,
             shell_command_backend,
             unified_exec_shell_mode: UnifiedExecShellMode::Direct,
@@ -1087,7 +1085,6 @@ fn create_collab_input_items_schema() -> JsonSchema {
 }
 
 fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
-    let available_models_description = spawn_agent_models_description(&config.available_models);
     let return_value_description = "Returns the canonical task name when the spawned agent was named, otherwise the agent id, plus the user-facing nickname when available.";
     let mut properties = BTreeMap::from([
         (
@@ -1154,8 +1151,8 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
         Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.
         Agent-role guidance below only helps choose which agent to use after spawning is already authorized; it never authorizes spawning by itself.
         Spawn a sub-agent for a well-scoped task. {return_value_description} This spawn_agent tool provides you access to smaller but more efficient sub-agents. A mini model can solve many tasks faster than the main model. You should follow the rules and guidelines below to use this tool.
-
-{available_models_description}
+- By default, omit `model` so the child inherits the current agent's model.
+- Only set `model` when the user explicitly asks for a different model and you know the current provider supports that override.
 ### When to delegate vs. do the subtask yourself
 - First, quickly analyze the overall user task and form a succinct high-level plan. Identify which tasks are immediate blockers on the critical path, and which tasks are sidecar tasks that are needed but can run in parallel without blocking the next local step. As part of that plan, explicitly decide what immediate task you should do locally right now. Do this planning step before delegating to agents so you do not hand off the immediate blocking task to a submodel and then waste time waiting on it.
 - Use the smaller subagent when a subtask is easy enough for it to handle and can run in parallel with your local work. Prefer delegating concrete, bounded sidecar tasks that materially advance the main task without blocking your immediate next local step.
@@ -1194,35 +1191,6 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
         },
         output_schema: Some(spawn_agent_output_schema(config.multi_agent_v2)),
     })
-}
-
-fn spawn_agent_models_description(models: &[ModelPreset]) -> String {
-    let visible_models: Vec<&ModelPreset> =
-        models.iter().filter(|model| model.show_in_picker).collect();
-    if visible_models.is_empty() {
-        return "No picker-visible models are currently loaded.".to_string();
-    }
-
-    visible_models
-        .into_iter()
-        .map(|model| {
-            let efforts = model
-                .supported_reasoning_efforts
-                .iter()
-                .map(|preset| format!("{} ({})", preset.effort, preset.description))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "- {} (`{}`): {} Default reasoning effort: {}. Supported reasoning efforts: {}.",
-                model.display_name,
-                model.model,
-                model.description,
-                model.default_reasoning_effort,
-                efforts
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn create_spawn_agents_on_csv_tool() -> ToolSpec {

@@ -41,6 +41,7 @@ use crate::config_loader::Sourced;
 use crate::config_loader::load_config_layers_state;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::memories::memory_root;
+use crate::model_provider_info::DYNAMO_PROVIDER_ID;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
@@ -146,10 +147,11 @@ pub const CONFIG_TOML_FILE: &str = "config.toml";
 const OPENAI_BASE_URL_ENV_VAR: &str = "OPENAI_BASE_URL";
 #[cfg(target_os = "linux")]
 const SYSTEM_BWRAP_PATH: &str = "/usr/bin/bwrap";
-const RESERVED_MODEL_PROVIDER_IDS: [&str; 3] = [
+const RESERVED_MODEL_PROVIDER_IDS: [&str; 4] = [
     OPENAI_PROVIDER_ID,
     OLLAMA_OSS_PROVIDER_ID,
     LMSTUDIO_OSS_PROVIDER_ID,
+    DYNAMO_PROVIDER_ID,
 ];
 
 #[cfg(target_os = "linux")]
@@ -405,6 +407,10 @@ pub struct Config {
 
     /// Combined provider map (defaults plus user-defined providers).
     pub model_providers: HashMap<String, ModelProviderInfo>,
+
+    /// NVIDIA Dynamo-specific configuration for session control, cache control,
+    /// and agent priority hints. Only effective when `model_provider` is `"dynamo"`.
+    pub dynamo: codex_api::nvext::DynamoConfig,
 
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     pub project_doc_max_bytes: usize,
@@ -2720,6 +2726,7 @@ impl Config {
             mcp_oauth_callback_port: cfg.mcp_oauth_callback_port,
             mcp_oauth_callback_url: cfg.mcp_oauth_callback_url.clone(),
             model_providers,
+            dynamo: codex_api::nvext::DynamoConfig::default(),
             project_doc_max_bytes: cfg.project_doc_max_bytes.unwrap_or(PROJECT_DOC_MAX_BYTES),
             project_doc_fallback_filenames: cfg
                 .project_doc_fallback_filenames
