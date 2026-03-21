@@ -1,17 +1,19 @@
-//! NVIDIA Dynamo extension types for the Responses API.
+//! Dynamo-specific request and response field types.
 //!
-//! These types mirror the `nvext` field in Dynamo's OpenAI-compatible API surface.
-//! When serialized into a `ResponsesApiRequest`, they enable Dynamo-specific features:
+//! These types mirror the `nvext` payload used by Dynamo-compatible OpenAI-style
+//! backends. When serialized into a `ResponsesApiRequest`, they enable:
 //! - **Session control**: sticky routing and KV isolation for subagent workloads
 //! - **Cache control**: retention-based KV eviction with configurable TTL
 //! - **Agent hints**: priority, expected output length, and speculative prefill
 //!
-//! Non-Dynamo providers ignore the `nvext` field (it is `skip_serializing_if = None`).
+//! Providers that do not implement this contract can ignore the `nvext` field
+//! (it is `skip_serializing_if = None`).
 
+use super::ProviderRequestFields;
 use serde::Deserialize;
 use serde::Serialize;
 
-/// NVIDIA Dynamo extensions to the OpenAI Responses API.
+/// Dynamo's `nvext` payload for the OpenAI Responses API.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NvExt {
     /// Session control for subagent KV isolation and sticky routing.
@@ -70,7 +72,7 @@ pub struct CacheControl {
     #[serde(rename = "type")]
     pub control_type: String,
 
-    /// TTL as seconds or shorthand ("5m", "1h"). Clamped by Dynamo to [300, 3600].
+    /// TTL as seconds or shorthand ("5m", "1h"). Backends may clamp this value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl: Option<String>,
 }
@@ -113,9 +115,9 @@ pub struct WorkerIdInfo {
     pub decode_worker_id: Option<u64>,
 }
 
-/// Dynamo-specific configuration for session and cache control.
+/// Configuration for request-body `nvext` injection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DynamoConfig {
+pub struct NvExtConfig {
     /// Inject session_control on subagent turns for sticky routing and KV isolation.
     #[serde(default = "default_true")]
     pub enable_session_control: bool,
@@ -137,7 +139,7 @@ pub struct DynamoConfig {
     pub extra_fields: Vec<String>,
 }
 
-impl Default for DynamoConfig {
+impl Default for NvExtConfig {
     fn default() -> Self {
         Self {
             enable_session_control: true,
@@ -155,6 +157,13 @@ fn default_true() -> bool {
 
 fn default_cache_ttl() -> String {
     "5m".to_string()
+}
+
+/// Wrap a Dynamo `nvext` payload in provider request fields for the Responses API body.
+pub fn request_fields(nvext: NvExt) -> serde_json::Result<ProviderRequestFields> {
+    let mut fields = ProviderRequestFields::default();
+    fields.insert_serialized_field("nvext", nvext)?;
+    Ok(fields)
 }
 
 #[cfg(test)]
@@ -218,12 +227,26 @@ mod tests {
     }
 
     #[test]
-    fn dynamo_config_defaults() {
-        let config = DynamoConfig::default();
+    fn nvext_config_defaults() {
+        let config = NvExtConfig::default();
         assert!(config.enable_session_control);
         assert!(config.enable_cache_control);
         assert_eq!(config.cache_ttl, "5m");
         assert_eq!(config.session_timeout, 30);
         assert_eq!(config.extra_fields, vec!["worker_id"]);
+    }
+
+    #[test]
+    fn request_fields_wrap_nvext_under_expected_wire_key() {
+        let fields = request_fields(NvExt {
+            session_control: None,
+            cache_control: None,
+            agent_hints: None,
+            extra_fields: None,
+        })
+        .unwrap();
+
+        let json = serde_json::to_value(fields).unwrap();
+        assert!(json.get("nvext").is_some());
     }
 }

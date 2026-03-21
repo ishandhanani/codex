@@ -268,7 +268,7 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
         service_tier: None,
         prompt_cache_key: None,
         text: None,
-        nvext: None,
+        provider_request_fields: Default::default(),
     };
     let client = ResponsesClient::new(transport.clone(), provider, NoAuth);
 
@@ -311,7 +311,7 @@ async fn azure_default_store_attaches_ids_and_headers() -> Result<()> {
         service_tier: None,
         prompt_cache_key: None,
         text: None,
-        nvext: None,
+        provider_request_fields: Default::default(),
     };
 
     let mut extra_headers = HeaderMap::new();

@@ -43,6 +43,13 @@ pub enum WireApi {
     Responses,
 }
 
+/// Provider-specific request-field dialects supported by Codex.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRequestExtensionKind {
+    Dynamo,
+}
+
 impl fmt::Display for WireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
@@ -128,10 +135,9 @@ pub struct ModelProviderInfo {
     #[serde(default)]
     pub supports_websockets: bool,
 
-    /// Whether to inject NVIDIA Dynamo `nvext` extensions into request bodies.
-    /// Enables session control, cache control, and agent priority hints.
+    /// Optional provider-specific request-field dialect to inject on outbound requests.
     #[serde(default)]
-    pub enable_nvext: bool,
+    pub provider_request_extensions: Option<ProviderRequestExtensionKind>,
 }
 
 impl ModelProviderInfo {
@@ -276,7 +282,7 @@ impl ModelProviderInfo {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
-            enable_nvext: false,
+            provider_request_extensions: None,
         }
     }
 
@@ -357,14 +363,13 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
-        enable_nvext: false,
+        provider_request_extensions: None,
     }
 }
 
 /// Create the built-in NVIDIA Dynamo provider.
 ///
 /// Reads `DYNAMO_BASE_URL` from the environment (defaults to `http://localhost:8000/v1`).
-/// API key is optional via `DYNAMO_API_KEY` for authenticated deployments.
 pub fn create_dynamo_provider() -> ModelProviderInfo {
     let default_base_url = format!(
         "http://localhost:{port}/v1",
@@ -395,7 +400,7 @@ pub fn create_dynamo_provider() -> ModelProviderInfo {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
-        enable_nvext: true,
+        provider_request_extensions: Some(ProviderRequestExtensionKind::Dynamo),
     }
 }
 

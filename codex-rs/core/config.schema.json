@@ -815,11 +815,6 @@
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"
         },
-        "enable_nvext": {
-          "default": false,
-          "description": "Whether to inject NVIDIA Dynamo `nvext` extensions into request bodies. Enables session control, cache control, and agent priority hints.",
-          "type": "boolean"
-        },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
@@ -849,6 +844,15 @@
         "name": {
           "description": "Friendly display name.",
           "type": "string"
+        },
+        "provider_request_extensions": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProviderRequestExtensionKind"
+            }
+          ],
+          "default": null,
+          "description": "Optional provider-specific request-field dialect to inject on outbound requests."
         },
         "query_params": {
           "additionalProperties": {
@@ -1249,6 +1253,13 @@
         }
       },
       "type": "object"
+    },
+    "ProviderRequestExtensionKind": {
+      "description": "Provider-specific request-field dialects supported by Codex.",
+      "enum": [
+        "dynamo"
+      ],
+      "type": "string"
     },
     "RawMcpServerConfig": {
       "additionalProperties": false,

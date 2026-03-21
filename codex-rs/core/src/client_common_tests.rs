@@ -2,6 +2,8 @@ use codex_api::ResponsesApiRequest;
 use codex_api::common::OpenAiVerbosity;
 use codex_api::common::TextControls;
 use codex_api::create_text_param_for_request;
+use codex_api::provider_extensions::dynamo::CacheControl;
+use codex_api::provider_extensions::dynamo::NvExt;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::FunctionCallOutputPayload;
 use pretty_assertions::assert_eq;
@@ -29,7 +31,7 @@ fn serializes_text_verbosity_when_set() {
             verbosity: Some(OpenAiVerbosity::Low),
             format: None,
         }),
-        nvext: None,
+        provider_request_fields: Default::default(),
     };
 
     let v = serde_json::to_value(&req).expect("json");
@@ -69,7 +71,7 @@ fn serializes_text_schema_with_strict_format() {
         prompt_cache_key: None,
         service_tier: None,
         text: Some(text_controls),
-        nvext: None,
+        provider_request_fields: Default::default(),
     };
 
     let v = serde_json::to_value(&req).expect("json");
@@ -107,7 +109,7 @@ fn omits_text_when_not_set() {
         prompt_cache_key: None,
         service_tier: None,
         text: None,
-        nvext: None,
+        provider_request_fields: Default::default(),
     };
 
     let v = serde_json::to_value(&req).expect("json");
@@ -130,7 +132,7 @@ fn serializes_flex_service_tier_when_set() {
         prompt_cache_key: None,
         service_tier: Some(ServiceTier::Flex.to_string()),
         text: None,
-        nvext: None,
+        provider_request_fields: Default::default(),
     };
 
     let v = serde_json::to_value(&req).expect("json");
@@ -138,6 +140,41 @@ fn serializes_flex_service_tier_when_set() {
         v.get("service_tier").and_then(|tier| tier.as_str()),
         Some("flex")
     );
+}
+
+#[test]
+fn serializes_dynamo_provider_request_fields_under_nvext_key() {
+    let provider_request_fields = codex_api::provider_extensions::dynamo::request_fields(NvExt {
+        session_control: None,
+        cache_control: Some(CacheControl {
+            control_type: "ephemeral".to_string(),
+            ttl: Some("5m".to_string()),
+        }),
+        agent_hints: None,
+        extra_fields: None,
+    })
+    .expect("provider fields should serialize");
+    let req = ResponsesApiRequest {
+        model: "gpt-5.1".to_string(),
+        instructions: "i".to_string(),
+        input: vec![],
+        tools: vec![],
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: true,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: vec![],
+        prompt_cache_key: None,
+        service_tier: None,
+        text: None,
+        provider_request_fields,
+    };
+
+    let v = serde_json::to_value(&req).expect("json");
+    assert!(v.get("provider_request_fields").is_none());
+    assert_eq!(v["nvext"]["cache_control"]["type"], "ephemeral");
+    assert_eq!(v["nvext"]["cache_control"]["ttl"], "5m");
 }
 
 #[test]

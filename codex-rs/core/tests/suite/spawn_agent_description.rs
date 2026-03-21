@@ -102,7 +102,7 @@ async fn wait_for_model_available(manager: &Arc<ModelsManager>, slug: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() -> Result<()> {
+async fn spawn_agent_description_recommends_inheriting_the_current_model() -> Result<()> {
     let server = start_mock_server().await;
     mount_models_once(
         &server,
@@ -165,20 +165,20 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
         spawn_agent_description(&body).expect("spawn_agent description should be present");
 
     assert!(
-        description.contains("- Visible Model (`visible-model`): Fast and capable"),
-        "expected visible model summary in spawn_agent description: {description:?}"
+        description.contains(
+            "- By default, omit `model` so the child inherits the current agent's model."
+        ),
+        "expected inherited-model guidance in spawn_agent description: {description:?}"
     );
     assert!(
-        description.contains("Default reasoning effort: medium."),
-        "expected default reasoning effort in spawn_agent description: {description:?}"
+        description.contains(
+            "- Only set `model` when the user explicitly asks for a different model and you know the current provider supports that override."
+        ),
+        "expected model-override guidance in spawn_agent description: {description:?}"
     );
     assert!(
-        description.contains("low (Quick scan), high (Deep dive)."),
-        "expected reasoning efforts in spawn_agent description: {description:?}"
-    );
-    assert!(
-        !description.contains("Hidden Model"),
-        "hidden picker model should be omitted from spawn_agent description: {description:?}"
+        !description.contains("Visible Model"),
+        "spawn_agent description should no longer enumerate visible models: {description:?}"
     );
     assert!(
         description.contains(

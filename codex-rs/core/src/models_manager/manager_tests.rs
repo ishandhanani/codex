@@ -89,7 +89,7 @@ fn provider_for(base_url: String) -> ModelProviderInfo {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
-        enable_nvext: false,
+        provider_request_extensions: None,
     }
 }
 

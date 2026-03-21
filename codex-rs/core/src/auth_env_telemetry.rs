@@ -74,7 +74,7 @@ mod tests {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
-            enable_nvext: false,
+            provider_request_extensions: None,
         };
 
         let telemetry = collect_auth_env_telemetry(&provider, false);
