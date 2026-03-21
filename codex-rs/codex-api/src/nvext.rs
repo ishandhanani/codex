@@ -8,7 +8,8 @@
 //!
 //! Non-Dynamo providers ignore the `nvext` field (it is `skip_serializing_if = None`).
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// NVIDIA Dynamo extensions to the OpenAI Responses API.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,13 +46,13 @@ pub struct SessionControl {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<SessionAction>,
 
-    /// Inactivity timeout in seconds (default 300, only used with `action: "open"`).
+    /// Inactivity timeout in seconds (default 30, only used with `action: "open"`).
     #[serde(default = "default_session_timeout")]
     pub timeout: u64,
 }
 
 fn default_session_timeout() -> u64 {
-    300
+    30
 }
 
 /// Session lifecycle actions.
@@ -194,7 +195,7 @@ mod tests {
             session_control: Some(SessionControl {
                 session_id: "codex-sub-1".to_string(),
                 action: None,
-                timeout: 300,
+                timeout: 30,
             }),
             cache_control: None,
             agent_hints: None,
@@ -210,7 +211,7 @@ mod tests {
         let sc = SessionControl {
             session_id: "test".to_string(),
             action: Some(SessionAction::Close),
-            timeout: 300,
+            timeout: 30,
         };
         let json = serde_json::to_value(&sc).unwrap();
         assert_eq!(json["action"], "close");
@@ -222,7 +223,7 @@ mod tests {
         assert!(config.enable_session_control);
         assert!(config.enable_cache_control);
         assert_eq!(config.cache_ttl, "5m");
-        assert_eq!(config.session_timeout, 300);
+        assert_eq!(config.session_timeout, 30);
         assert_eq!(config.extra_fields, vec!["worker_id"]);
     }
 }
