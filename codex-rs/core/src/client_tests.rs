@@ -1,4 +1,5 @@
 use super::AuthRequestTelemetryContext;
+use super::DYNAMO_SUBAGENT_EXPIRY_ENV_VAR;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
 use super::UnauthorizedRecoveryExecution;
@@ -11,6 +12,36 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::env;
+use std::ffi::OsStr;
+
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &OsStr) -> Self {
+        let original = env::var_os(key);
+        unsafe {
+            env::set_var(key, value);
+        }
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.original.take() {
+            Some(value) => unsafe {
+                env::set_var(self.key, value);
+            },
+            None => unsafe {
+                env::remove_var(self.key);
+            },
+        }
+    }
+}
 
 fn test_model_client(session_source: SessionSource) -> ModelClient {
     let provider = crate::model_provider_info::create_oss_provider_with_base_url(
@@ -256,6 +287,143 @@ fn dynamo_provider_request_fields_omit_open_action_after_first_request() {
             .get("nvext")
             .and_then(|value| value.get("session_control"))
             .and_then(|session_control| session_control.get("action")),
+        None
+    );
+}
+
+#[test]
+fn dynamo_provider_request_fields_respect_subagent_expiry_env_override() {
+    let _guard = EnvVarGuard::set(DYNAMO_SUBAGENT_EXPIRY_ENV_VAR, OsStr::new("75"));
+    let client = test_dynamo_extension_model_client(spawned_subagent_session_source());
+    let model_info = test_model_info();
+    let provider = client
+        .state
+        .provider
+        .to_api_provider(None)
+        .expect("provider should be valid");
+    let session = client.new_session();
+    let prompt = crate::client_common::Prompt {
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+
+    let request = session
+        .build_responses_request(
+            &provider,
+            &prompt,
+            &model_info,
+            None,
+            ReasoningSummary::None,
+            None,
+        )
+        .expect("request should build");
+
+    assert_eq!(
+        request
+            .provider_request_fields
+            .0
+            .get("nvext")
+            .and_then(|value| value.get("session_control"))
+            .and_then(|session_control| session_control.get("timeout"))
+            .and_then(serde_json::Value::as_u64),
+        Some(75)
+    );
+}
+
+#[test]
+fn dynamo_provider_request_fields_ignore_invalid_subagent_expiry_env_override() {
+    let _guard = EnvVarGuard::set(DYNAMO_SUBAGENT_EXPIRY_ENV_VAR, OsStr::new("invalid"));
+    let client = test_dynamo_extension_model_client(spawned_subagent_session_source());
+    let model_info = test_model_info();
+    let provider = client
+        .state
+        .provider
+        .to_api_provider(None)
+        .expect("provider should be valid");
+    let session = client.new_session();
+    let prompt = crate::client_common::Prompt {
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+
+    let request = session
+        .build_responses_request(
+            &provider,
+            &prompt,
+            &model_info,
+            None,
+            ReasoningSummary::None,
+            None,
+        )
+        .expect("request should build");
+
+    assert_eq!(
+        request
+            .provider_request_fields
+            .0
+            .get("nvext")
+            .and_then(|value| value.get("session_control"))
+            .and_then(|session_control| session_control.get("timeout"))
+            .and_then(serde_json::Value::as_u64),
+        Some(30)
+    );
+}
+
+#[test]
+fn dynamo_provider_cleanup_request_emits_close_action() {
+    let client = test_dynamo_extension_model_client(spawned_subagent_session_source());
+    let model_info = test_model_info();
+    let provider = client
+        .state
+        .provider
+        .to_api_provider(None)
+        .expect("provider should be valid");
+    let session = client.new_session();
+    let prompt = crate::client_common::Prompt {
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+
+    let _first_request = session
+        .build_responses_request(
+            &provider,
+            &prompt,
+            &model_info,
+            None,
+            ReasoningSummary::None,
+            None,
+        )
+        .expect("first request should build");
+    assert_eq!(client.request_provider_session_close(), true);
+
+    let cleanup_request = session
+        .build_provider_cleanup_request(&model_info, None)
+        .expect("cleanup request should build")
+        .expect("cleanup request should exist");
+
+    assert_eq!(cleanup_request.max_output_tokens, Some(0));
+    assert_eq!(
+        cleanup_request
+            .provider_request_fields
+            .0
+            .get("nvext")
+            .and_then(|value| value.get("session_control"))
+            .and_then(|session_control| session_control.get("action"))
+            .and_then(|action| action.as_str()),
+        Some("close")
+    );
+    assert_eq!(
+        cleanup_request
+            .provider_request_fields
+            .0
+            .get("nvext")
+            .and_then(|value| value.get("cache_control")),
         None
     );
 }

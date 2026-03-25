@@ -117,6 +117,7 @@ pub const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
 pub const X_CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 pub const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER: &str =
     "x-responsesapi-include-timing-metrics";
+const DYNAMO_SUBAGENT_EXPIRY_ENV_VAR: &str = "DYNAMO_SUBAGENT_EXPIRY";
 const RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const RESPONSES_ENDPOINT: &str = "/responses";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
@@ -154,6 +155,7 @@ struct ModelClientState {
 pub(crate) struct ProviderExtensionSessionState {
     session_id: String,
     is_first_turn: AtomicBool,
+    close_requested: AtomicBool,
     config: codex_api::provider_extensions::dynamo::NvExtConfig,
 }
 
@@ -170,13 +172,40 @@ impl ProviderExtensionSessionState {
         match source {
             SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
                 ..
-            }) => Some(Self {
-                session_id: format!("codex-{conversation_id}"),
-                is_first_turn: AtomicBool::new(true),
-                config: codex_api::provider_extensions::dynamo::NvExtConfig::default(),
-            }),
+            }) => {
+                let mut config = codex_api::provider_extensions::dynamo::NvExtConfig::default();
+                config.session_timeout = dynamo_subagent_expiry_from_env(config.session_timeout);
+
+                Some(Self {
+                    session_id: format!("codex-{conversation_id}"),
+                    is_first_turn: AtomicBool::new(true),
+                    close_requested: AtomicBool::new(false),
+                    config,
+                })
+            }
             _ => None,
         }
+    }
+}
+
+fn dynamo_subagent_expiry_from_env(default_timeout: u64) -> u64 {
+    match std::env::var(DYNAMO_SUBAGENT_EXPIRY_ENV_VAR) {
+        Ok(raw_value) => match raw_value.parse::<u64>() {
+            Ok(timeout) if timeout > 0 => timeout,
+            Ok(_) => {
+                warn!(
+                    "{DYNAMO_SUBAGENT_EXPIRY_ENV_VAR} must be a positive integer number of seconds; using default {default_timeout}"
+                );
+                default_timeout
+            }
+            Err(error) => {
+                warn!(
+                    "failed to parse {DYNAMO_SUBAGENT_EXPIRY_ENV_VAR}={raw_value:?} as seconds ({error}); using default {default_timeout}"
+                );
+                default_timeout
+            }
+        },
+        Err(_) => default_timeout,
     }
 }
 
@@ -281,6 +310,12 @@ enum WebsocketStreamOutcome {
     FallbackToHttp,
 }
 
+#[derive(Clone, Copy)]
+enum ProviderRequestPurpose {
+    Turn,
+    Cleanup,
+}
+
 impl ModelClient {
     #[allow(clippy::too_many_arguments)]
     /// Creates a new session-scoped `ModelClient`.
@@ -332,6 +367,35 @@ impl ModelClient {
             websocket_session: self.take_cached_websocket_session(),
             turn_state: Arc::new(OnceLock::new()),
         }
+    }
+
+    pub(crate) fn request_provider_session_close(&self) -> bool {
+        let Some(provider_extensions) = self.state.provider_extensions.as_ref() else {
+            return false;
+        };
+        if provider_extensions.is_first_turn.load(Ordering::SeqCst) {
+            return false;
+        }
+        provider_extensions
+            .close_requested
+            .store(true, Ordering::SeqCst);
+        true
+    }
+
+    pub(crate) async fn close_provider_session(
+        &self,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        service_tier: Option<ServiceTier>,
+    ) -> Result<()> {
+        if !self.request_provider_session_close() {
+            return Ok(());
+        }
+
+        let mut session = self.new_session();
+        session
+            .close_provider_session(model_info, session_telemetry, service_tier)
+            .await
     }
 
     fn take_cached_websocket_session(&self) -> WebsocketSession {
@@ -392,7 +456,7 @@ impl ModelClient {
         }
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(
+        let request_telemetry = ModelClient::build_request_telemetry(
             session_telemetry,
             AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
@@ -461,7 +525,7 @@ impl ModelClient {
 
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(
+        let request_telemetry = ModelClient::build_request_telemetry(
             session_telemetry,
             AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
@@ -781,9 +845,11 @@ impl ModelClientSession {
                 Some(service_tier) => Some(service_tier.to_string()),
                 None => None,
             },
+            max_output_tokens: None,
             prompt_cache_key,
             text,
-            provider_request_fields: self.build_provider_request_fields()?,
+            provider_request_fields: self
+                .build_provider_request_fields(ProviderRequestPurpose::Turn)?,
         };
         Ok(request)
     }
@@ -794,10 +860,11 @@ impl ModelClientSession {
     /// so the rest of the client stack does not need provider-specific branching.
     fn build_provider_request_fields(
         &self,
+        purpose: ProviderRequestPurpose,
     ) -> Result<codex_api::provider_extensions::ProviderRequestFields> {
         match self.client.state.provider.provider_request_extensions {
             Some(crate::model_provider_info::ProviderRequestExtensionKind::Dynamo) => self
-                .build_dynamo_nvext()
+                .build_dynamo_nvext(purpose)
                 .map(codex_api::provider_extensions::dynamo::request_fields)
                 .transpose()
                 .map(std::option::Option::unwrap_or_default)
@@ -808,39 +875,65 @@ impl ModelClientSession {
 
     /// Build Dynamo's `nvext` payload for a request.
     ///
-    /// Returns `None` when there is no subagent session state. For supported subagent
-    /// sessions, injects session control on the first turn and cache-control hints on
-    /// every turn. Codex does not currently issue a separate terminal request for explicit
-    /// close, so cleanup relies on the short session timeout configured by default.
-    fn build_dynamo_nvext(&self) -> Option<codex_api::provider_extensions::dynamo::NvExt> {
+    /// Returns `None` when there is no subagent session state. Turn requests inject
+    /// session control on the first turn and cache-control hints on every turn.
+    /// Cleanup requests emit only an explicit terminal session close.
+    fn build_dynamo_nvext(
+        &self,
+        purpose: ProviderRequestPurpose,
+    ) -> Option<codex_api::provider_extensions::dynamo::NvExt> {
         let provider_extensions = self.client.state.provider_extensions.as_ref()?;
+        let (session_control, cache_control) = match purpose {
+            ProviderRequestPurpose::Turn => {
+                let action = if provider_extensions
+                    .is_first_turn
+                    .swap(false, Ordering::SeqCst)
+                {
+                    Some(codex_api::provider_extensions::dynamo::SessionAction::Open)
+                } else {
+                    None
+                };
 
-        let action = if provider_extensions
-            .is_first_turn
-            .swap(false, Ordering::SeqCst)
-        {
-            Some(codex_api::provider_extensions::dynamo::SessionAction::Open)
-        } else {
-            None
-        };
+                let session_control = if provider_extensions.config.enable_session_control {
+                    Some(codex_api::provider_extensions::dynamo::SessionControl {
+                        session_id: provider_extensions.session_id.clone(),
+                        action,
+                        timeout: provider_extensions.config.session_timeout,
+                    })
+                } else {
+                    None
+                };
 
-        let session_control = if provider_extensions.config.enable_session_control {
-            Some(codex_api::provider_extensions::dynamo::SessionControl {
-                session_id: provider_extensions.session_id.clone(),
-                action,
-                timeout: provider_extensions.config.session_timeout,
-            })
-        } else {
-            None
-        };
+                let cache_control = if provider_extensions.config.enable_cache_control {
+                    Some(codex_api::provider_extensions::dynamo::CacheControl {
+                        control_type: "ephemeral".to_string(),
+                        ttl: Some(provider_extensions.config.cache_ttl.clone()),
+                    })
+                } else {
+                    None
+                };
 
-        let cache_control = if provider_extensions.config.enable_cache_control {
-            Some(codex_api::provider_extensions::dynamo::CacheControl {
-                control_type: "ephemeral".to_string(),
-                ttl: Some(provider_extensions.config.cache_ttl.clone()),
-            })
-        } else {
-            None
+                (session_control, cache_control)
+            }
+            ProviderRequestPurpose::Cleanup => {
+                let should_close = provider_extensions
+                    .close_requested
+                    .swap(false, Ordering::SeqCst)
+                    && !provider_extensions.is_first_turn.load(Ordering::SeqCst)
+                    && provider_extensions.config.enable_session_control;
+                if !should_close {
+                    return None;
+                }
+
+                (
+                    Some(codex_api::provider_extensions::dynamo::SessionControl {
+                        session_id: provider_extensions.session_id.clone(),
+                        action: Some(codex_api::provider_extensions::dynamo::SessionAction::Close),
+                        timeout: provider_extensions.config.session_timeout,
+                    }),
+                    None,
+                )
+            }
         };
 
         let extra_fields = if provider_extensions.config.extra_fields.is_empty() {
@@ -855,6 +948,40 @@ impl ModelClientSession {
             agent_hints: None, // priority is gated off by default
             extra_fields,
         })
+    }
+
+    fn build_provider_cleanup_request(
+        &self,
+        model_info: &ModelInfo,
+        service_tier: Option<ServiceTier>,
+    ) -> Result<Option<ResponsesApiRequest>> {
+        let provider_request_fields =
+            self.build_provider_request_fields(ProviderRequestPurpose::Cleanup)?;
+        if provider_request_fields.0.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(ResponsesApiRequest {
+            model: model_info.slug.clone(),
+            instructions: String::new(),
+            input: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: false,
+            reasoning: None,
+            store: false,
+            stream: false,
+            include: Vec::new(),
+            service_tier: match service_tier {
+                Some(ServiceTier::Fast) => Some("priority".to_string()),
+                Some(service_tier) => Some(service_tier.to_string()),
+                None => None,
+            },
+            max_output_tokens: Some(0),
+            prompt_cache_key: Some(self.client.state.conversation_id.to_string()),
+            text: None,
+            provider_request_fields,
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1185,6 +1312,42 @@ impl ModelClientSession {
                 Err(err) => return Err(map_api_error(err)),
             }
         }
+    }
+
+    async fn close_provider_session(
+        &mut self,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        service_tier: Option<ServiceTier>,
+    ) -> Result<()> {
+        let client_setup = self.client.current_client_setup().await?;
+        let compression = self.responses_request_compression(client_setup.auth.as_ref());
+        let request_telemetry = ModelClient::build_request_telemetry(
+            session_telemetry,
+            AuthRequestTelemetryContext::new(
+                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+                &client_setup.api_auth,
+                PendingUnauthorizedRetry::default(),
+            ),
+            RequestRouteTelemetry::for_endpoint(RESPONSES_ENDPOINT),
+            self.client.state.auth_env_telemetry.clone(),
+        );
+        let options = self.build_responses_options(/*turn_metadata_header*/ None, compression);
+        let Some(request) = self.build_provider_cleanup_request(model_info, service_tier)? else {
+            return Ok(());
+        };
+        let client = ApiResponsesClient::new(
+            ReqwestTransport::new(build_reqwest_client()),
+            client_setup.api_provider,
+            client_setup.api_auth,
+        )
+        .with_telemetry(Some(request_telemetry), /*sse*/ None);
+        client
+            .execute_request(request, options)
+            .await
+            .map_err(map_api_error)?;
+        self.reset_websocket_session();
+        Ok(())
     }
 
     /// Streams a turn via the Responses API over WebSocket transport.

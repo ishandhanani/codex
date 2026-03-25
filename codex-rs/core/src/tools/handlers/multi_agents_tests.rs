@@ -1979,7 +1979,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
 }
 
 #[tokio::test]
-async fn close_agent_submits_shutdown_and_returns_previous_status() {
+async fn close_agent_submits_provider_close_shutdown_and_returns_previous_status() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
@@ -2007,7 +2007,7 @@ async fn close_agent_submits_shutdown_and_returns_previous_status() {
     let ops = manager.captured_ops();
     let submitted_shutdown = ops
         .iter()
-        .any(|(id, op)| *id == agent_id && matches!(op, Op::Shutdown));
+        .any(|(id, op)| *id == agent_id && matches!(op, Op::CloseProviderSessionAndShutdown));
     assert_eq!(submitted_shutdown, true);
 
     let status_after = manager.agent_control().get_status(agent_id).await;

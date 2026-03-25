@@ -45,6 +45,12 @@ use tracing::warn;
 const AGENT_NAMES: &str = include_str!("agent_names.txt");
 const FORKED_SPAWN_AGENT_OUTPUT_MESSAGE: &str = "You are the newly spawned agent. The prior conversation history was forked from your parent agent. Treat the next user message as your new task, and use the forked history only as background context.";
 
+#[derive(Clone, Copy)]
+enum ShutdownMode {
+    Plain,
+    CloseProviderSession,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_parent_spawn_call_id: Option<String>,
@@ -554,6 +560,15 @@ impl AgentControl {
     /// Submit a shutdown request for a live agent without marking it explicitly closed in
     /// persisted spawn-edge state.
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
+        self.shutdown_live_agent_with_mode(agent_id, ShutdownMode::Plain)
+            .await
+    }
+
+    async fn shutdown_live_agent_with_mode(
+        &self,
+        agent_id: ThreadId,
+        shutdown_mode: ShutdownMode,
+    ) -> CodexResult<String> {
         let state = self.upgrade()?;
         let result = if let Ok(thread) = state.get_thread(agent_id).await {
             thread.codex.session.ensure_rollout_materialized().await;
@@ -561,10 +576,10 @@ impl AgentControl {
             if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
                 Ok(String::new())
             } else {
-                state.send_op(agent_id, Op::Shutdown {}).await
+                state.send_op(agent_id, shutdown_op(shutdown_mode)).await
             }
         } else {
-            state.send_op(agent_id, Op::Shutdown {}).await
+            state.send_op(agent_id, shutdown_op(shutdown_mode)).await
         };
         let _ = state.remove_thread(&agent_id).await;
         self.state.release_spawned_thread(agent_id);
@@ -583,15 +598,31 @@ impl AgentControl {
         {
             warn!("failed to persist thread-spawn edge status for {agent_id}: {err}");
         }
-        self.shutdown_agent_tree(agent_id).await
+        self.shutdown_agent_tree_with_mode(agent_id, ShutdownMode::CloseProviderSession)
+            .await
     }
 
     /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.
+    #[cfg_attr(not(test), allow(dead_code))]
     async fn shutdown_agent_tree(&self, agent_id: ThreadId) -> CodexResult<String> {
+        self.shutdown_agent_tree_with_mode(agent_id, ShutdownMode::Plain)
+            .await
+    }
+
+    async fn shutdown_agent_tree_with_mode(
+        &self,
+        agent_id: ThreadId,
+        shutdown_mode: ShutdownMode,
+    ) -> CodexResult<String> {
         let descendant_ids = self.live_thread_spawn_descendants(agent_id).await?;
-        let result = self.shutdown_live_agent(agent_id).await;
+        let result = self
+            .shutdown_live_agent_with_mode(agent_id, shutdown_mode)
+            .await;
         for descendant_id in descendant_ids {
-            match self.shutdown_live_agent(descendant_id).await {
+            match self
+                .shutdown_live_agent_with_mode(descendant_id, shutdown_mode)
+                .await
+            {
                 Ok(_) | Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) => {}
                 Err(err) => return Err(err),
             }
@@ -1037,6 +1068,13 @@ impl AgentControl {
         }
 
         Ok(descendants)
+    }
+}
+
+fn shutdown_op(shutdown_mode: ShutdownMode) -> Op {
+    match shutdown_mode {
+        ShutdownMode::Plain => Op::Shutdown,
+        ShutdownMode::CloseProviderSession => Op::CloseProviderSessionAndShutdown,
     }
 }
 

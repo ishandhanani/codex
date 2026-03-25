@@ -4433,6 +4433,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     false
                 }
                 Op::Shutdown => handlers::shutdown(&sess, sub.id.clone()).await,
+                Op::CloseProviderSessionAndShutdown => {
+                    handlers::close_provider_session_and_shutdown(&sess, sub.id.clone()).await
+                }
                 Op::Review { review_request } => {
                     handlers::review(&sess, &config, sub.id.clone(), review_request).await;
                     false
@@ -5245,6 +5248,37 @@ mod handlers {
         };
         sess.send_event_raw(event).await;
         true
+    }
+
+    pub async fn close_provider_session_and_shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
+        let (model, service_tier, config) = {
+            let state = sess.state.lock().await;
+            let session_configuration = &state.session_configuration;
+            (
+                session_configuration.collaboration_mode.model().to_string(),
+                session_configuration.service_tier,
+                Session::build_per_turn_config(session_configuration),
+            )
+        };
+        let model_info = sess
+            .services
+            .models_manager
+            .get_model_info(&model, &config)
+            .await;
+        let session_telemetry = sess
+            .services
+            .session_telemetry
+            .clone()
+            .with_model(model.as_str(), model_info.slug.as_str());
+        if let Err(err) = sess
+            .services
+            .model_client
+            .close_provider_session(&model_info, &session_telemetry, service_tier)
+            .await
+        {
+            warn!("failed to close provider session before shutdown: {err}");
+        }
+        shutdown(sess, sub_id).await
     }
 
     pub async fn review(

@@ -14,6 +14,7 @@ use crate::telemetry::SseTelemetry;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
 use codex_client::RequestTelemetry;
+use codex_client::Response;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -71,6 +72,36 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
         request: ResponsesApiRequest,
         options: ResponsesOptions,
     ) -> Result<ResponseStream, ApiError> {
+        let (body, headers, compression, turn_state) = self.prepare_request(request, options)?;
+        self.stream(body, headers, compression, turn_state).await
+    }
+
+    #[instrument(
+        name = "responses.execute_request",
+        level = "info",
+        skip_all,
+        fields(
+            transport = "responses_http",
+            http.method = "POST",
+            api.path = "responses"
+        )
+    )]
+    pub async fn execute_request(
+        &self,
+        request: ResponsesApiRequest,
+        options: ResponsesOptions,
+    ) -> Result<Response, ApiError> {
+        let (body, headers, _compression, _turn_state) = self.prepare_request(request, options)?;
+        self.session
+            .execute(Method::POST, Self::path(), headers, Some(body))
+            .await
+    }
+
+    fn prepare_request(
+        &self,
+        request: ResponsesApiRequest,
+        options: ResponsesOptions,
+    ) -> Result<(Value, HeaderMap, Compression, Option<Arc<OnceLock<String>>>), ApiError> {
         let ResponsesOptions {
             conversation_id,
             session_source,
@@ -94,7 +125,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             insert_header(&mut headers, "x-openai-subagent", &subagent);
         }
 
-        self.stream(body, headers, compression, turn_state).await
+        Ok((body, headers, compression, turn_state))
     }
 
     fn path() -> &'static str {

@@ -1635,6 +1635,18 @@ async fn shutdown_agent_tree_closes_live_descendants() {
     let mut shutdown_ids = shutdown_ids;
     shutdown_ids.sort_by_key(std::string::ToString::to_string);
     assert_eq!(shutdown_ids, expected_shutdown_ids);
+
+    let close_shutdown_ids = harness
+        .manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| {
+            matches!(op, Op::CloseProviderSessionAndShutdown).then_some(thread_id)
+        })
+        .collect::<Vec<_>>();
+    let mut close_shutdown_ids = close_shutdown_ids;
+    close_shutdown_ids.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(close_shutdown_ids, Vec::<ThreadId>::new());
 }
 
 #[tokio::test]
@@ -1721,11 +1733,25 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
         .into_iter()
         .filter_map(|(thread_id, op)| matches!(op, Op::Shutdown).then_some(thread_id))
         .collect::<Vec<_>>();
-    let mut expected_shutdown_ids = vec![parent_thread_id, child_thread_id, grandchild_thread_id];
+    let mut expected_shutdown_ids = vec![parent_thread_id];
     expected_shutdown_ids.sort_by_key(std::string::ToString::to_string);
     let mut shutdown_ids = shutdown_ids;
     shutdown_ids.sort_by_key(std::string::ToString::to_string);
     assert_eq!(shutdown_ids, expected_shutdown_ids);
+
+    let close_shutdown_ids = harness
+        .manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| {
+            matches!(op, Op::CloseProviderSessionAndShutdown).then_some(thread_id)
+        })
+        .collect::<Vec<_>>();
+    let mut expected_close_shutdown_ids = vec![child_thread_id, grandchild_thread_id];
+    expected_close_shutdown_ids.sort_by_key(std::string::ToString::to_string);
+    let mut close_shutdown_ids = close_shutdown_ids;
+    close_shutdown_ids.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(close_shutdown_ids, expected_close_shutdown_ids);
 }
 
 #[tokio::test]

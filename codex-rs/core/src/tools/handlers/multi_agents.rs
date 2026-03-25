@@ -49,7 +49,7 @@ pub mod close_agent;
 mod resume_agent;
 mod send_input;
 mod spawn;
-pub(crate) mod wait;
 #[cfg(test)]
 #[path = "multi_agents_tests.rs"]
 mod tests;
+pub(crate) mod wait;

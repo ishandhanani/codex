@@ -166,6 +166,8 @@ pub struct ResponsesApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<TextControls>,
@@ -189,6 +191,7 @@ impl From<&ResponsesApiRequest> for ResponseCreateWsRequest {
             stream: request.stream,
             include: request.include.clone(),
             service_tier: request.service_tier.clone(),
+            max_output_tokens: request.max_output_tokens,
             prompt_cache_key: request.prompt_cache_key.clone(),
             text: request.text.clone(),
             generate: None,
@@ -213,6 +216,8 @@ pub struct ResponseCreateWsRequest {
     pub include: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

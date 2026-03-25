@@ -499,6 +499,9 @@ pub enum Op {
     /// Request to shut down codex instance.
     Shutdown,
 
+    /// Best-effort provider session cleanup followed by shutdown.
+    CloseProviderSessionAndShutdown,
+
     /// Execute a user-initiated one-off shell command (triggered by "!cmd").
     ///
     /// The command string is executed using the user's default shell and may
@@ -597,6 +600,7 @@ impl Op {
             Self::ThreadRollback { .. } => "thread_rollback",
             Self::Review { .. } => "review",
             Self::Shutdown => "shutdown",
+            Self::CloseProviderSessionAndShutdown => "close_provider_session_and_shutdown",
             Self::RunUserShellCommand { .. } => "run_user_shell_command",
             Self::ListModels => "list_models",
         }
