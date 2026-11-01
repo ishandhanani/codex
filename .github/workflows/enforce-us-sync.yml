@@ -1,0 +1,141 @@
+# enforce-us sync.
+#
+# Scheduled workflows only run from the repository's DEFAULT branch, so this
+# file lives on `enforce-us-tooling` (the default branch). `main` stays a
+# pristine mirror of upstream.
+#
+# Every 6h (and on demand) it lists upstream stable rust-vX.Y.Z tags, finds
+# ones missing an enforce-us-vX.Y.Z tag here, and runs
+# scripts/cut-release.sh for each (oldest first).
+#   - clean apply: branch + tag pushed, then the release workflow is kicked
+#     off via `gh workflow run` (GITHUB_TOKEN pushes don't fire tag-push
+#     triggers)
+#   - conflict: the rejected state is committed and pushed as
+#     enforce-us-X.Y.Z-conflict and an issue titled
+#     "enforce-us: conflict on X.Y.Z" is opened (deduped by title)
+#
+# Secrets: none required. GITHUB_TOKEN is enough because the release workflow
+# is dispatched explicitly. If you prefer tag pushes to trigger builds
+# directly, add a PAT secret named ENFORCE_US_PAT and set it on the checkout
+# step's `token:`.
+name: enforce-us-sync
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: enforce-us-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: enforce-us-tooling
+          fetch-depth: 0
+          # token: ${{ secrets.ENFORCE_US_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "enforce-us-bot"
+          git config user.email "enforce-us-bot@users.noreply.github.com"
+          git remote add upstream https://github.com/openai/codex.git || true
+
+      - name: Find missing versions
+        run: |
+          set -euo pipefail
+          git ls-remote --tags upstream 'rust-v*' \
+            | awk '{print $2}' | sed 's|refs/tags/rust-v||' \
+            | grep -vE '\^\{\}|-' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -u > /tmp/upstream.txt
+          git tag -l 'enforce-us-v*' | sed 's/^enforce-us-v//' > /tmp/fork.txt
+          git ls-remote --tags origin 'enforce-us-v*' \
+            | awk '{print $2}' | sed 's|refs/tags/enforce-us-v||' \
+            | grep -vE '\^\{\}' >> /tmp/fork.txt
+          sort -u /tmp/fork.txt -o /tmp/fork.txt
+          comm -23 /tmp/upstream.txt /tmp/fork.txt | sort -V > /tmp/missing.txt
+          # Never backfill: only cut versions newer than the latest existing
+          # enforce-us tag (floor = last aphoh release when history is absent).
+          floor="$(grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' /tmp/fork.txt | sort -V | tail -1)"
+          floor="${floor:-0.156.1}"
+          echo "Version floor: ${floor}"
+          awk -v f="$floor" 'BEGIN{n=split(f,a,".")}
+            {split($0,b,".");
+             if (b[1]>a[1] || (b[1]==a[1]&&b[2]>a[2]) || (b[1]==a[1]&&b[2]==a[2]&&b[3]>a[3])) print}' \
+            /tmp/missing.txt > /tmp/todo.txt
+          mv /tmp/todo.txt /tmp/missing.txt
+          echo "Versions to cut:"; cat /tmp/missing.txt
+
+      - name: Cut releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          : > /tmp/pushed.txt
+          while read -r v; do
+            [ -z "$v" ] && continue
+            echo "=== cutting $v ==="
+            if ./scripts/cut-release.sh "$v" >"/tmp/cut-${v}.log" 2>&1; then
+              cat "/tmp/cut-${v}.log"
+              echo "enforce-us-v${v}" >> /tmp/pushed.txt
+              continue
+            fi
+            rc=$?
+            cat "/tmp/cut-${v}.log"
+            if [ "$rc" -ne 2 ]; then
+              echo "::error::cut-release.sh failed for ${v} (rc=${rc})"
+              git am --abort || true
+              git checkout enforce-us-tooling
+              continue
+            fi
+            # Conflict: commit the rejected apply for inspection.
+            git am --abort || true
+            git apply --reject enforce-us.patch || true
+            git add -A
+            git commit -m "wip: enforce-us patch conflicts on ${v}" || true
+            git push origin "HEAD:refs/heads/enforce-us-${v}-conflict"
+            # Open an issue unless one already exists (open or closed title).
+            if ! gh issue list --repo "${{ github.repository }}" \
+                --search "in:title \"enforce-us: conflict on ${v}\"" \
+                --json title --jq 'length' | grep -qE '^[1-9]'; then
+              {
+                echo "\`git am -3 enforce-us.patch\` does not apply onto \`rust-v${v}\`."
+                echo
+                echo "Conflicted state is on branch \`enforce-us-${v}-conflict\` (rejects committed as \`.rej\` files)."
+                echo
+                echo '```'
+                tail -n 60 "/tmp/cut-${v}.log"
+                echo '```'
+              } > "/tmp/issue-${v}.md"
+              gh issue create --repo "${{ github.repository }}" \
+                --title "enforce-us: conflict on ${v}" \
+                --body-file "/tmp/issue-${v}.md"
+            else
+              echo "issue already exists for ${v}; skipping"
+            fi
+            git checkout enforce-us-tooling
+          done < /tmp/missing.txt
+
+      - name: Dispatch release builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          while read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "dispatching release build for $tag"
+            gh workflow run enforce-us-release.yml \
+              --repo "${{ github.repository }}" \
+              --ref enforce-us-tooling \
+              -f "tag=${tag}"
+          done < /tmp/pushed.txt

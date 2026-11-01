@@ -1,0 +1,195 @@
+# enforce-us release build.
+#
+# Triggered by:
+#   - push of tags matching enforce-us-v*.*.* (this file is copied onto each
+#     enforce-us-X.Y.Z release branch by scripts/cut-release.sh so the
+#     workflow exists at the tag)
+#   - workflow_dispatch / workflow_call with a `tag` input (used by
+#     enforce-us-sync.yml, whose GITHUB_TOKEN pushes cannot trigger
+#     tag-push workflows)
+#
+# Builds codex + codex-code-mode-host in release mode, verifies
+# `codex --version` == "codex-cli X.Y.Z", and publishes a GitHub Release
+# matching the historical aphoh/codex convention.
+name: enforce-us-release
+
+on:
+  push:
+    tags:
+      - "enforce-us-v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "enforce-us-vX.Y.Z tag to build"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: "enforce-us-vX.Y.Z tag to build"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            platform: linux-x86-64
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            platform: macos-arm64
+    steps:
+      - name: Resolve tag
+        run: echo "TAG=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
+
+      - name: Check tag format
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^enforce-us-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "bad tag: $TAG"; exit 1; }
+          echo "VERSION=${TAG#enforce-us-v}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TAG }}
+
+      # Mirrors the toolchain pinned by upstream's rust-release.yml at this
+      # tag (read dynamically so we track upstream bumps).
+      - name: Read upstream toolchain version
+        id: tc
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="$(grep -oE 'rust-toolchain@[a-f0-9]+ +# +[0-9]+\.[0-9]+\.[0-9]+' \
+               .github/workflows/rust-release.yml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+$')"
+          [[ -n "$v" ]] || { echo "could not parse toolchain version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # v1.95.0 action
+        with:
+          toolchain: ${{ steps.tc.outputs.version }}
+          targets: ${{ matrix.target }}
+
+      - name: Configure rusty_v8 artifact overrides
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Cargo build
+        shell: bash
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          STABLE_GIT_COMMIT="$(git rev-parse HEAD)"
+          export STABLE_GIT_COMMIT
+          cargo build --target "${{ matrix.target }}" --release \
+            --bin codex --bin codex-code-mode-host
+
+      - name: Verify version output
+        shell: bash
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/codex"
+          out="$("$bin" --version)"
+          echo "codex --version: $out"
+          [[ "$out" == "codex-cli ${VERSION}"* ]] \
+            || { echo "expected 'codex-cli ${VERSION}', got '$out'"; exit 1; }
+
+      - name: Verify patch literals in source
+        shell: bash
+        run: |
+          set -euo pipefail
+          lit='"enforce_residency = \"us\""'
+          grep -Fq "$lit" codex-rs/config/src/cloud_config_bundle.rs
+          grep -Fq "$lit" codex-rs/config/src/loader/mod.rs
+          grep -Fq 'Ok(_contents)' codex-rs/config/src/loader/mod.rs
+
+      - name: Pack archive
+        shell: bash
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)"
+          cp "target/${{ matrix.target }}/release/codex" "$stage/"
+          cp "target/${{ matrix.target }}/release/codex-code-mode-host" "$stage/"
+          name="codex-${VERSION}-enforce-us-${{ matrix.platform }}.tar.gz"
+          tar -C "$stage" -czf "$GITHUB_WORKSPACE/$name" codex codex-code-mode-host
+          sha="$(shasum -a 256 "$GITHUB_WORKSPACE/$name" | awk '{print $1}')"
+          echo "ARCHIVE=$name" >> "$GITHUB_ENV"
+          echo "ARCHIVE_SHA256=$sha" >> "$GITHUB_ENV"
+          echo "$name sha256:$sha"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: enforce-us-${{ matrix.platform }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 5
+
+      - name: Record build metadata
+        run: |
+          {
+            echo "sha256=${ARCHIVE_SHA256}"
+            echo "commit=$(git rev-parse HEAD)"
+          } >> "$GITHUB_WORKSPACE/${{ matrix.platform }}.meta"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: enforce-us-meta-${{ matrix.platform }}
+          path: ${{ github.workspace }}/*.meta
+          retention-days: 5
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: enforce-us-*
+          merge-multiple: true
+
+      - name: Resolve tag/version
+        run: |
+          echo "TAG=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
+          echo "VERSION=${{ inputs.tag || github.ref_name }}" | sed 's/.*enforce-us-v/VERSION=/' >> "$GITHUB_ENV"
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -la
+          linux_sha="$(grep '^sha256=' linux-x86-64.meta | cut -d= -f2)"
+          linux_commit="$(grep '^commit=' linux-x86-64.meta | cut -d= -f2)"
+          mac_sha="$(grep '^sha256=' macos-arm64.meta | cut -d= -f2)"
+          {
+            echo "Release built from enforce-us commit ${linux_commit}."
+            echo
+            echo "Includes codex and codex-code-mode-host."
+            echo
+            echo "Verified version output: codex-cli ${VERSION}"
+            echo
+            echo "codex-${VERSION}-enforce-us-linux-x86-64.tar.gz SHA-256: ${linux_sha}"
+            echo "codex-${VERSION}-enforce-us-macos-arm64.tar.gz SHA-256: ${mac_sha}"
+          } > body.md
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Codex ${VERSION} enforce-us" \
+            --notes-file body.md \
+            codex-"${VERSION}"-enforce-us-*.tar.gz

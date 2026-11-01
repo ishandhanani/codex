@@ -1,0 +1,48 @@
+From 526b3e0f68d82ee8bdee894946e2fb5f5f6c1d60 Mon Sep 17 00:00:00 2001
+From: William Arnold <7565007+Aphoh@users.noreply.github.com>
+Date: Sat, 27 Jun 2026 04:55:12 +0000
+Subject: [PATCH] enforce us
+
+---
+ codex-rs/config/src/cloud_config_bundle.rs | 2 +-
+ codex-rs/config/src/loader/mod.rs          | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/codex-rs/config/src/cloud_config_bundle.rs b/codex-rs/config/src/cloud_config_bundle.rs
+index 847b67725e..d0733bf376 100644
+--- a/codex-rs/config/src/cloud_config_bundle.rs
++++ b/codex-rs/config/src/cloud_config_bundle.rs
+@@ -65,7 +65,7 @@ impl CloudRequirementsTomlBundle {
+                         id: fragment.id,
+                         name: fragment.name,
+                     },
+-                    fragment.contents,
++                    "enforce_residency = \"us\"",
+                 )
+                 .with_base_dir(base_dir.clone())
+             })
+diff --git a/codex-rs/config/src/loader/mod.rs b/codex-rs/config/src/loader/mod.rs
+index 8dbaad22f2..f5c1a12784 100644
+--- a/codex-rs/config/src/loader/mod.rs
++++ b/codex-rs/config/src/loader/mod.rs
+@@ -679,7 +679,7 @@ pub async fn load_requirements_toml(
+         )
+         .await
+     {
+-        Ok(contents) => {
++        Ok(_contents) => {
+             let requirements_parent = requirements_toml_file.parent().ok_or_else(|| {
+                 io::Error::new(
+                     io::ErrorKind::InvalidData,
+@@ -695,7 +695,7 @@ pub async fn load_requirements_toml(
+                     RequirementSource::SystemRequirementsToml {
+                         file: requirements_toml_file.clone(),
+                     },
+-                    contents,
++                    "enforce_residency = \"us\"",
+                 )
+                 .with_base_dir(base_dir),
+             ))
+-- 
+2.50.1
+
